@@ -58,8 +58,13 @@ def listen():
 
     with sr.Microphone() as source:
         print("🎙️ Listening... (Speak clearly)")
+
+        # 🔥 Noise reduction
+        recognizer.adjust_for_ambient_noise(source, duration=1)  
+
         try:
-            audio = recognizer.listen(source, timeout=10, phrase_time_limit=10)
+            # ⏱️ Increased timeout and phrase time limit
+            audio = recognizer.listen(source, timeout=15, phrase_time_limit=15)  
             print("🛠️ Recognizing...")
             text = recognizer.recognize_google(audio)
             print(f"✅ You said: {text}")
@@ -76,21 +81,6 @@ def listen():
         except sr.WaitTimeoutError:
             print("⏱️ No speech detected. Try again.")
             return ""
-
-# 🤖 Function to generate AI response
-def get_response(user_input):
-    print(f"🤖 Generating AI Response for: {user_input}")
-    
-    responses = model.generate_content(
-        [user_input],
-        generation_config=generation_config,
-        safety_settings=safety_settings
-    )
-
-     # Extract the response and remove '*' symbols
-    message = responses.text.replace('*', '')  # ✅ Remove all asterisks
-    print(f"✅ AI Response: {message}")
-    return message
 
 # 🔊 Function to convert text to speech and play it
 def speak(text):
