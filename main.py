@@ -2,11 +2,12 @@ import os
 import speech_recognition as sr
 import vertexai
 from vertexai.preview.generative_models import GenerativeModel
-from vertexai.preview.generative_models import SafetySetting, Tool, grounding
 import simpleaudio as sa
-import pyttsx3  # 🚀 Direct .wav audio generation
+from gtts import gTTS
+import io
+import wave
 
-# 🔥 Initialize Vertex AI with Application Default Credentials
+# ✅ Initialize Vertex AI
 vertexai.init(
     project="abstract-arbor-454701-m0",  # Your GCP project ID
     location="us-central1"
@@ -19,52 +20,21 @@ model = GenerativeModel(
 
 # 🎯 Generation Configuration
 generation_config = {
-    "max_output_tokens": 6000,
+    "max_output_tokens": 100,   # Shorter responses
     "temperature": 0.7,
     "top_p": 0.95,
     "seed": 0,
 }
 
-# 🚫 Safety Settings
-safety_settings = [
-    SafetySetting(
-        category=SafetySetting.HarmCategory.HARM_CATEGORY_HATE_SPEECH,
-        threshold=SafetySetting.HarmBlockThreshold.OFF
-    ),
-    SafetySetting(
-        category=SafetySetting.HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT,
-        threshold=SafetySetting.HarmBlockThreshold.OFF
-    ),
-    SafetySetting(
-        category=SafetySetting.HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT,
-        threshold=SafetySetting.HarmBlockThreshold.OFF
-    ),
-    SafetySetting(
-        category=SafetySetting.HarmCategory.HARM_CATEGORY_HARASSMENT,
-        threshold=SafetySetting.HarmBlockThreshold.OFF
-    ),
-]
-
-# 🔎 Google Search Tool (optional)
-tools = [
-    Tool.from_google_search_retrieval(
-        google_search_retrieval=grounding.GoogleSearchRetrieval()
-    )
-]
-
-# 🎙️ Function to listen and recognize voice
+# 🎙️ **Function to listen and recognize voice**
 def listen():
     recognizer = sr.Recognizer()
 
     with sr.Microphone() as source:
         print("🎙️ Listening... (Speak clearly)")
-
-        # 🔥 Noise reduction
-        recognizer.adjust_for_ambient_noise(source, duration=1)  
-
+        recognizer.adjust_for_ambient_noise(source, duration=1)  # Noise reduction
         try:
-            # ⏱️ Increased timeout and phrase time limit
-            audio = recognizer.listen(source, timeout=15, phrase_time_limit=15)  
+            audio = recognizer.listen(source, timeout=15, phrase_time_limit=15)  # Extended listening time
             print("🛠️ Recognizing...")
             text = recognizer.recognize_google(audio)
             print(f"✅ You said: {text}")
@@ -82,24 +52,46 @@ def listen():
             print("⏱️ No speech detected. Try again.")
             return ""
 
-# 🔊 Function to convert text to speech and play it
+# 🤖 **Function to generate AI response**
+def get_response(user_input):
+    print(f"🤖 Generating AI Response for: {user_input}")
+    
+    responses = model.generate_content(
+        [user_input],
+        generation_config=generation_config
+    )
+
+    # Extract and return the response
+    message = responses.text.strip().replace("*", "")  # Remove asterisks
+    print(f"✅ AI Response: {message}")
+    return message
+
+# 🔊 **Function to convert text to WAV and play it**
 def speak(text):
-    output_file = "output.wav"
+    # Convert text to speech using gTTS
+    tts = gTTS(text=text, lang='en')
 
-    # 🎯 Use pyttsx3 to generate `.wav` audio
-    engine = pyttsx3.init()
-    engine.save_to_file(text, output_file)
-    engine.runAndWait()
+    # Save to in-memory bytes buffer
+    with io.BytesIO() as buffer:
+        tts.write_to_fp(buffer)
+        buffer.seek(0)
 
-    # 🎯 Play `.wav` audio with simpleaudio
-    wave_obj = sa.WaveObject.from_wave_file(output_file)
+        # Create a WAV file directly
+        with wave.open("output.wav", "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(44100)
+            wav_file.writeframes(buffer.read())
+
+    # Play the WAV file
+    wave_obj = sa.WaveObject.from_wave_file("output.wav")
     play_obj = wave_obj.play()
     play_obj.wait_done()
 
     # Clean up
-    os.remove(output_file)
+    os.remove("output.wav")
 
-# 🚀 Main function
+# 🚀 **Main function**
 def main():
     print("🚀 Voice AI Assistant Running...")
 
