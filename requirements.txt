@@ -1,6 +1,5 @@
-SpeechRecognition
+google-cloud-speech
+vertexai
+simpleaudio
 gtts
-pyaudio
-playsound
-python-dotenv
-openai
+pydub
