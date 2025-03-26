@@ -145,25 +145,48 @@ def get_response(user_input, max_retries=3, retry_delay=2):
     return "I'm having trouble connecting. Please try again later."
 
 
-# 🔊 **Function to convert text to speech with standard voice**
+# 🔊 **Function to convert text to speech with human-like voice**
 def speak(text):
-    """Convert text to speech with a consistent voice using pyttsx3."""
+    """Convert text to speech with Google Cloud TTS for human-like voice."""
     try:
-        engine = pyttsx3.init()
+        from google.cloud import texttospeech
 
-        # ✅ Set a consistent voice
-        voices = engine.getProperty('voices')
+        # ✅ Initialize Google Cloud TTS
+        tts_client = texttospeech.TextToSpeechClient()
 
-        # Choose a specific voice for consistency
-        engine.setProperty('voice', voices[1].id)  # Female voice (index may vary)
+        synthesis_input = texttospeech.SynthesisInput(text=text)
 
-        # ✅ Set the speed and volume for standardization
-        engine.setProperty('rate', 180)  # Normal speaking rate
-        engine.setProperty('volume', 1.0)  # Max volume
+        voice = texttospeech.VoiceSelectionParams(
+            language_code="en-US",
+            name="en-US-Wavenet-F",      # ✅ Human-like female voice
+            ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
+        )
+
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.LINEAR16
+        )
+
+        # ✅ Synthesize speech
+        response = tts_client.synthesize_speech(
+            input=synthesis_input,
+            voice=voice,
+            audio_config=audio_config
+        )
+
+        # ✅ Save audio to file
+        with open("output.wav", "wb") as out:
+            out.write(response.audio_content)
+
+        # ✅ Play audio
+        import simpleaudio as sa
+        wave_obj = sa.WaveObject.from_wave_file("output.wav")
+        play_obj = wave_obj.play()
+        play_obj.wait_done()
 
         print("🔊 Speaking...")
-        engine.say(text)
-        engine.runAndWait()
+
+        # ✅ Clean up
+        os.remove("output.wav")
 
     except Exception as e:
         print(f"❌ Error in TTS: {e}")
