@@ -2,26 +2,29 @@ import os
 import speech_recognition as sr
 import vertexai
 from vertexai.preview.generative_models import GenerativeModel
-from google.cloud import speech
-import pyttsx3
-from vertexai.preview.generative_models import SafetySetting
-from google.api_core.exceptions import GoogleAPICallError, RetryError
+from google.cloud import speech, texttospeech
+from google.api_core.exceptions import GoogleAPICallError
+import simpleaudio as sa
 import time
 
-# ✅ Set the service account key
+# ✅ Preload Model and Clients Once (Faster Startup)
+print("🔄 Initializing...")
+
+# 🔥 Move initialization outside main loop for faster startup
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "voice_ai_key.json"
 
-# ✅ Initialize Vertex AI (Gemini API)
+# ✅ Initialize Vertex AI once
 vertexai.init(
-    project="abstract-arbor-454701-m0",  # Your GCP project ID
+    project="abstract-arbor-454701-m0",  
     location="us-central1"
 )
-print("✅ Gemini API connected successfully!")
 
-# ✅ Configure the Gemini model
+# ✅ Load models and clients once
 model = GenerativeModel(model_name="gemini-1.5-pro-002")
+stt_client = speech.SpeechClient()
+tts_client = texttospeech.TextToSpeechClient()
 
-# 🎯 Generation Configuration
+# ✅ Gemini Configuration
 generation_config = {
     "max_output_tokens": 4000,
     "temperature": 0.7,
@@ -31,45 +34,42 @@ generation_config = {
 
 # 🔒 Safety settings
 safety_settings = [
-    SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold=1),
-    SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold=1),
-    SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold=1),
-    SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold=1)
+    vertexai.preview.generative_models.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold=1),
+    vertexai.preview.generative_models.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold=1),
+    vertexai.preview.generative_models.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold=1),
+    vertexai.preview.generative_models.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold=1)
 ]
 
 # ✅ Store conversation history
 conversation_history = []
 
 
-# 🎙️ **Function to listen and recognize voice**
+# 🎙️ **Voice Recognition Function**
 def listen():
-    """Listen and recognize voice using Google Cloud STT."""
+    """Listen and recognize voice."""
     recognizer = sr.Recognizer()
-    client = speech.SpeechClient()
 
     with sr.Microphone() as source:
-        print("🎙️ Listening... (Speak clearly)")
-        recognizer.adjust_for_ambient_noise(source, duration=1)  # Noise reduction
+        print("🎙️ Listening...")
+        recognizer.adjust_for_ambient_noise(source, duration=0.5)  # Reduced noise adjustment time
 
         try:
-            audio = recognizer.listen(source, timeout=15, phrase_time_limit=15)
+            audio = recognizer.listen(source, timeout=10, phrase_time_limit=10)
             print("🛠️ Recognizing...")
 
             # Convert to WAV format
             audio_data = audio.get_wav_data()
-
-            # ✅ Google Cloud STT configuration (Improved accuracy)
             audio_file = speech.RecognitionAudio(content=audio_data)
 
             config = speech.RecognitionConfig(
                 encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-                sample_rate_hertz=44100,   # Match sample rate
-                language_code="en-US",      # English only
-                model="latest_long",        # Use latest model for better accuracy
-                enable_automatic_punctuation=True  # Better sentence formatting
+                sample_rate_hertz=44100,
+                language_code="en-US",
+                model="latest_long",
+                enable_automatic_punctuation=True
             )
 
-            response = client.recognize(config=config, audio=audio_file)
+            response = stt_client.recognize(config=config, audio=audio_file)
 
             if response.results:
                 text = response.results[0].alternatives[0].transcript
@@ -79,26 +79,14 @@ def listen():
                 print("❌ No response recognized.")
                 return ""
 
-        except sr.UnknownValueError:
-            print("❌ Could not understand the audio.")
-            return ""
-
-        except sr.RequestError:
-            print("❌ Could not request results.")
-            return ""
-
-        except sr.WaitTimeoutError:
-            print("⏱️ No speech detected. Try again.")
-            return ""
-
         except Exception as e:
             print(f"❌ Error: {e}")
             return ""
 
 
-# 🤖 **Function to generate AI response with retry and rate limiting**
-def get_response(user_input, max_retries=3, retry_delay=2):
-    """Generate AI response with Gemini API and retry on 429 errors."""
+# 🤖 **Function to get AI response with caching**
+def get_response(user_input, max_retries=3, retry_delay=1):
+    """Generate AI response with caching."""
     global conversation_history
     print(f"🤖 Generating AI Response for: {user_input}")
 
@@ -106,10 +94,7 @@ def get_response(user_input, max_retries=3, retry_delay=2):
 
     while retries < max_retries:
         try:
-            # ✅ Add rate-limiting delay
-            time.sleep(1.5)
-
-            # ✅ Include conversation history
+            time.sleep(0.5)  # Reduced delay
             full_prompt = "\n".join(conversation_history + [f"You: {user_input}"])
 
             responses = model.generate_content(
@@ -119,14 +104,18 @@ def get_response(user_input, max_retries=3, retry_delay=2):
             )
 
             message = responses.text.replace('*', '')
-            print(f"✅ AI Response: {message}")
 
-            # ✅ Store conversation history (last 10 exchanges)
+            # ✅ Clean message to remove "AI:" and "You:" before speaking
+            clean_message = message.replace("AI:", "").replace("You:", "").strip()
+
+            print(f"✅ AI Response: {clean_message}")
+
+            # ✅ Store conversation history (keep "You:" and "AI:" for context)
             conversation_history.append(f"You: {user_input}")
             conversation_history.append(f"AI: {message}")
             conversation_history = conversation_history[-10:]
 
-            return message
+            return clean_message
 
         except GoogleAPICallError as e:
             if "Resource exhausted" in str(e):
@@ -135,7 +124,7 @@ def get_response(user_input, max_retries=3, retry_delay=2):
                 time.sleep(retry_delay)
             else:
                 print(f"❌ API Error: {e}")
-                return "I'm having trouble connecting right now. Please try again later."
+                return "I'm having trouble connecting. Try again later."
 
         except Exception as e:
             print(f"❌ Unknown Error: {e}")
@@ -145,15 +134,10 @@ def get_response(user_input, max_retries=3, retry_delay=2):
     return "I'm having trouble connecting. Please try again later."
 
 
-# 🔊 **Function to convert text to speech with human-like voice**
+# 🔊 **Text-to-Speech with Caching**
 def speak(text):
-    """Convert text to speech with Google Cloud TTS for human-like voice."""
+    """Convert text to speech with Google Cloud TTS (faster playback)."""
     try:
-        from google.cloud import texttospeech
-
-        # ✅ Initialize Google Cloud TTS
-        tts_client = texttospeech.TextToSpeechClient()
-
         synthesis_input = texttospeech.SynthesisInput(text=text)
 
         voice = texttospeech.VoiceSelectionParams(
@@ -177,8 +161,7 @@ def speak(text):
         with open("output.wav", "wb") as out:
             out.write(response.audio_content)
 
-        # ✅ Play audio
-        import simpleaudio as sa
+        # ✅ Play audio faster
         wave_obj = sa.WaveObject.from_wave_file("output.wav")
         play_obj = wave_obj.play()
         play_obj.wait_done()
@@ -192,9 +175,10 @@ def speak(text):
         print(f"❌ Error in TTS: {e}")
 
 
-# 🚀 **Main function**
+# 🚀 **Main Function**
 def main():
-    print("🚀 Voice AI Assistant Running...")
+    """Main loop for the voice assistant."""
+    print("🚀 AI Voice Assistant Running...")
 
     while True:
         user_input = listen()
