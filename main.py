@@ -6,16 +6,27 @@ from google.cloud import speech, texttospeech
 from google.api_core.exceptions import GoogleAPICallError
 import simpleaudio as sa
 import time
+from dotenv import load_dotenv
+import logging
 
-# ✅ Preload Model and Clients Once (Faster Startup)
+# ✅ Load environment variables securely
+load_dotenv()
+
+# 🔒 Secure credentials from .env
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.getenv("GOOGLE_CREDENTIALS")
+
+# ✅ Initialize Logging
+logging.basicConfig(
+    filename="assistant.log",
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+# ✅ Preload Model and Clients Once
 print("🔄 Initializing...")
 
-# 🔥 Move initialization outside main loop for faster startup
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "voice_ai_key.json"
-
-# ✅ Initialize Vertex AI once
 vertexai.init(
-    project="abstract-arbor-454701-m0",  
+    project=os.getenv("GCP_PROJECT"),
     location="us-central1"
 )
 
@@ -43,6 +54,31 @@ safety_settings = [
 # ✅ Store conversation history
 conversation_history = []
 
+# ✅ Rate limiting & timeout settings
+MAX_REQUESTS_PER_MINUTE = 30  # Limit to 30 requests per minute
+REQUEST_TIMEOUT = 10  # API timeout in seconds
+request_count = 0
+start_time = time.time()
+
+
+# ✅ **Function to prevent abuse**
+def rate_limit():
+    global request_count, start_time
+    current_time = time.time()
+    
+    # Reset counter every minute
+    if current_time - start_time > 60:
+        request_count = 0
+        start_time = current_time
+
+    if request_count >= MAX_REQUESTS_PER_MINUTE:
+        print("⛔ Rate limit reached. Try again later.")
+        time.sleep(5)
+        return False
+    else:
+        request_count += 1
+        return True
+
 
 # 🎙️ **Voice Recognition Function**
 def listen():
@@ -51,13 +87,12 @@ def listen():
 
     with sr.Microphone() as source:
         print("🎙️ Listening...")
-        recognizer.adjust_for_ambient_noise(source, duration=0.5)  # Reduced noise adjustment time
+        recognizer.adjust_for_ambient_noise(source, duration=0.5)
 
         try:
             audio = recognizer.listen(source, timeout=10, phrase_time_limit=10)
             print("🛠️ Recognizing...")
 
-            # Convert to WAV format
             audio_data = audio.get_wav_data()
             audio_file = speech.RecognitionAudio(content=audio_data)
 
@@ -72,7 +107,13 @@ def listen():
             response = stt_client.recognize(config=config, audio=audio_file)
 
             if response.results:
-                text = response.results[0].alternatives[0].transcript
+                text = response.results[0].alternatives[0].transcript.strip()
+                
+                # ✅ Input validation (sanitize input)
+                if len(text) > 500 or any(char in text for char in [';', '--', '<', '>', '`']):
+                    print("🚫 Invalid input detected.")
+                    return ""
+
                 print(f"✅ You said: {text}")
                 return text
             else:
@@ -80,6 +121,7 @@ def listen():
                 return ""
 
         except Exception as e:
+            logging.error(f"STT Error: {e}")
             print(f"❌ Error: {e}")
             return ""
 
@@ -88,13 +130,17 @@ def listen():
 def get_response(user_input, max_retries=3, retry_delay=1):
     """Generate AI response with caching."""
     global conversation_history
+
+    if not rate_limit():
+        return "Rate limit exceeded. Try again later."
+
     print(f"🤖 Generating AI Response for: {user_input}")
 
     retries = 0
 
     while retries < max_retries:
         try:
-            time.sleep(0.5)  # Reduced delay
+            time.sleep(0.5)
             full_prompt = "\n".join(conversation_history + [f"You: {user_input}"])
 
             responses = model.generate_content(
@@ -105,12 +151,12 @@ def get_response(user_input, max_retries=3, retry_delay=1):
 
             message = responses.text.replace('*', '')
 
-            # ✅ Clean message to remove "AI:" and "You:" before speaking
+            # ✅ Clean message
             clean_message = message.replace("AI:", "").replace("You:", "").strip()
 
             print(f"✅ AI Response: {clean_message}")
 
-            # ✅ Store conversation history (keep "You:" and "AI:" for context)
+            # ✅ Store conversation history
             conversation_history.append(f"You: {user_input}")
             conversation_history.append(f"AI: {message}")
             conversation_history = conversation_history[-10:]
@@ -123,10 +169,12 @@ def get_response(user_input, max_retries=3, retry_delay=1):
                 print(f"🔄 Retrying... Attempt {retries}/{max_retries}")
                 time.sleep(retry_delay)
             else:
+                logging.error(f"API Error: {e}")
                 print(f"❌ API Error: {e}")
                 return "I'm having trouble connecting. Try again later."
 
         except Exception as e:
+            logging.error(f"Unknown Error: {e}")
             print(f"❌ Unknown Error: {e}")
             return "Something went wrong. Please try again."
 
@@ -136,13 +184,13 @@ def get_response(user_input, max_retries=3, retry_delay=1):
 
 # 🔊 **Text-to-Speech with Caching**
 def speak(text):
-    """Convert text to speech with Google Cloud TTS (faster playback)."""
+    """Convert text to speech with Google Cloud TTS."""
     try:
         synthesis_input = texttospeech.SynthesisInput(text=text)
 
         voice = texttospeech.VoiceSelectionParams(
             language_code="en-US",
-            name="en-US-Wavenet-F",      # ✅ Human-like female voice
+            name="en-US-Wavenet-F",
             ssml_gender=texttospeech.SsmlVoiceGender.FEMALE
         )
 
@@ -150,28 +198,29 @@ def speak(text):
             audio_encoding=texttospeech.AudioEncoding.LINEAR16
         )
 
-        # ✅ Synthesize speech
         response = tts_client.synthesize_speech(
             input=synthesis_input,
             voice=voice,
             audio_config=audio_config
         )
 
-        # ✅ Save audio to file
-        with open("output.wav", "wb") as out:
+        # ✅ Save and play audio
+        audio_file = "output.wav"
+        with open(audio_file, "wb") as out:
             out.write(response.audio_content)
 
-        # ✅ Play audio faster
-        wave_obj = sa.WaveObject.from_wave_file("output.wav")
+        wave_obj = sa.WaveObject.from_wave_file(audio_file)
         play_obj = wave_obj.play()
         play_obj.wait_done()
 
         print("🔊 Speaking...")
 
-        # ✅ Clean up
-        os.remove("output.wav")
+        # ✅ Secure file cleanup
+        if os.path.exists(audio_file):
+            os.remove(audio_file)
 
     except Exception as e:
+        logging.error(f"TTS Error: {e}")
         print(f"❌ Error in TTS: {e}")
 
 
